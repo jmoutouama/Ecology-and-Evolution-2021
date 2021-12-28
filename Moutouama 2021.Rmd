@@ -1,0 +1,331 @@
+---
+title: 'Soil properties mediated by altitude, not geography or climatic distance, explain the distribution of a tropical endemic herb'
+author: "Jacob Moutouama and Orou Gaoue"
+output: 
+  rmdformats::readthedown:
+    code_folding: show
+    self_contained: true
+    number_sections: true
+    thumbnails: true
+    lightbox: true
+    gallery: true
+    keep_md: true
+    highlight: tango
+    df_print: kable 
+    toc_depth: 3
+    fig_width: 8
+    fig_height: 8
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+opts_chunk$set(external=TRUE,echo=F,warning=FALSE,fig.pos='H', global.device = TRUE)
+a4width<- 8.3
+a4height<- 11.7
+options(knitr.table.format = "latex")
+```
+
+This document provides code to reproduce the analyses from:
+
+> Moutouama, J.K. and OG Gaoue. 2021. "Soil properties mediated by altitude, not geography or climatic distance, explain the distribution of a tropical endemic herb" _Ecology and Evolution_
+
+
+```{r eval=TRUE,echo=T}
+rm(list = ls())
+source("/Users/jmoutouama/Dropbox/PhD Project/Biotic_abiotic_Thunbergia/load_pkgs.R")
+```
+
+# Soil fertility data to reduce to data to Principal component 
+
+```{r, results="hide"}
+Thunbergia.soil<-read.csv("/Users/jmoutouama/Desktop/Thunbergia /Data/Soil.csv", header=T)
+str(Thunbergia.soil)
+head(Thunbergia.soil)
+summary(Thunbergia.soil)
+Soil.pca<-PCA(Thunbergia.soil[,-c(1,2)], scale.unit = TRUE, ncp = 5, graph = FALSE) 
+```
+
+```{r}
+fviz_eig(Soil.pca, addlabels = TRUE, ylim = c(0, 50))
+```
+
+
+```{r}
+library(corrplot)
+var <- get_pca_var(Soil.pca)
+head(var$contrib, 4)
+corrplot(var$contrib, is.corr=FALSE) 
+```
+
+
+```{r}
+fviz_pca_var(Soil.pca, col.var = "contrib",
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07")
+             )
+```
+
+```{r}
+ind <- get_pca_ind(Soil.pca)
+ind.contribution<-ind$contrib
+ind.cordinate<-ind$coord
+data.soil<-cbind.data.frame(Thunbergia.soil,ind.cordinate) 
+#write.infile(data.soil, "/Users/jmoutouama/Desktop/Thunbergia /Data/data.soil.csv", sep = ";")
+```
+
+```{r}
+Soil.plot<-fviz_pca_biplot(Soil.pca, 
+                # Individuals
+                geom.ind = "point",
+                fill.ind = Thunbergia.soil$Population, col.ind = "black",
+                pointshape = 21, pointsize = 2,
+                palette = NULL,
+                addEllipses = TRUE,
+                # Variables
+                alpha.var ="contrib", col.var = "contrib",
+                gradient.cols = c("white", "blue", "red"),
+                title = "",
+                legend.title = list(fill = "Population", color = "Contribution")
+                )
+
+Soil.plot
+#ggsave("/Users/jmoutouama/Desktop/Thunbergia/Figure/Soil.plot.png", Soil.plot, width = 10,height = 10,dpi = 600)
+
+
+
+```
+
+The calculation of the geographic distance was obtained from: 
+> Dallas, T., Decker, R. R., & Hastings, A. (2017). Species are not most abundant in the centre of their geographic range or climatic niche. Ecology Letters, 20(12), 1526–1533. https://doi.org/10.1111/ele.12860
+
+# Centroid of geographic range 
+
+```{r eval=T,results="hide"}
+library(geosphere)
+Thunbergia <- Thunbergia[,3:4] 
+## estimate the centroid
+centroid(Thunbergia)
+#Thunbergia_centroid<-rbind(Thunbergia,c(10.07482,1.692276))
+Thunbergia_centroid<-rbind(Thunbergia,c(9.925417,1.801845))
+
+## Distance from the geographic center
+result <- data.frame(matrix(nrow = 55, ncol = 2))
+colnames(result) <- c("i", "distance")
+for (i in 1:55) {
+  dis<-distGeo(Thunbergia_centroid[i, ], Thunbergia_centroid[55, ])
+  result[i, 1] <- i
+  result[i,2]<-dis
+}
+
+result
+#write.infile(result, "distance.center.csv", sep = ";")
+
+```
+
+The calculation of the climatic distance (here mahanalobis distance) was obtained from: 
+
+> Luis Osorio-Olvera, Lira-Noriega, A., Soberón, J., Peterson, A. T., Falconi, M., Contreras-Díaz, R. G., … Barve, N. (2020). ntbox: an R package with graphical user interface for modeling and evaluating multidimensional ecological niches. Methods in Ecology and Evolution, 1(1), 1–2. doi:10.1111/j.2041-210x.2010.00016.x.
+# Model calibration selection using Minimum Volume Ellipsoids (MVEs).
+
+```{r,results="hide"}
+set.seed(100)
+
+bioclim<-stack(list.files("/Users/jmoutouama/Dropbox/PhD Project/Biotic_abiotic_Thunbergia/bioclim",
+                      pattern = ".tif$",
+                      full.names = T))
+plot(bioclim)
+
+```
+
+```{r}
+# Let's  split the occurrence data into train and test using the type variable; the choice of the data is  done using different random partition methods.
+
+thunb<- read.csv("/Users/jmoutouama/Dropbox/PhD Project/Biotic_abiotic_Thunbergia/Data/occurence.convexhull.csv", stringsAsFactors=FALSE)
+
+# Random sample indexes
+train_index <- sample(1:nrow(thunb), 0.8 * nrow(thunb))
+test_index <- setdiff(1:nrow(thunb), train_index)
+
+
+# # Split occs in train and test
+thunb_train <- thunb[train_index, ]
+thunb_test <- thunb[test_index, ]
+
+
+#The following code extracts the environmental information for both train and test data
+
+thunb_etrain <- raster::extract(bioclim,thunb_train[,c("longitude", "latitude")],df=TRUE)
+thunb_etrain <- thunb_etrain[,-1]
+head(thunb_etrain)
+
+
+thunb_etest <- raster::extract(bioclim,thunb_test[,c("longitude","latitude")], df=TRUE)
+thunb_etest <- thunb_etest[,-1]
+head(thunb_etest)
+```
+
+```{r}
+env_varsL <- ntbox::correlation_finder(cor(thunb_etrain),threshold = 0.8,verbose = F)
+env_vars <- env_varsL$descriptors
+print(env_vars )
+
+# Now we specify the number of variables to fit the ellipsoid models; in the example, we will fit for 3,5, and 6 dimensions
+nvarstest <- c(3,5,6)
+
+# This parameter is to specify the proportion of training points that will be used to fit the minimum volume ellipsoid (Van Aelst and Rousseeuw 2009).
+
+
+# Level
+level <- 0.99
+
+
+# This background data is just to compute the partial ROC test
+env_bg <- ntbox::sample_envbg(bioclim,10000)
+
+# For selecting the model we will use an arbitrary value of 6 percent of omission; it is not a rule but accepted omission rates are those bellow 10%. We will ask the function to return the partial ROC value (Peterson, Papes, and Soberon 2008)
+
+omr_criteria <- 0.06
+proc <- TRUE
+
+# Now we just need to use the function ellipsoid_selection to run the model calibration and selection protocol
+
+e_selct <- ntbox::ellipsoid_selection(env_train = thunb_etrain,
+                                      env_test = thunb_etest,
+                                      env_vars = env_vars,
+                                      level = level,
+                                      nvarstest = nvarstest,
+                                      env_bg = env_bg,
+                                      omr_criteria= omr_criteria,
+                                      proc = proc)
+
+
+# Let’s see the first 20 rows of the results
+head(e_selct,20)
+
+
+# With the following lines of code, I am going to display the model in the first row of the table
+# Best ellipsoid model for "omr_criteria" 
+bestvarcomb <- stringr::str_split(e_selct$fitted_vars,",")[[1]]
+
+
+
+
+
+# Ellipsoid model (environmental space)
+best_mod <- ntbox::cov_center(thunb_etrain[,bestvarcomb],
+                              mve = T,
+                              level = 0.99,
+                              vars = 1:length(bestvarcomb))
+
+class(best_mod)
+
+
+# Projection model in geographic space
+
+mProj <- ntbox::ellipsoidfit(bioclim[[bestvarcomb]],
+                             centroid = best_mod$centroid,
+                             covar = best_mod$covariance,
+                             level = 0.99,size = 3)
+dev.new(
+  title = "Chord",
+  width = 10,
+  height = 5,
+  noRStudioGD = TRUE
+)
+
+raster::plot(mProj$suitRaster)
+points(thunb[,c("longitude","latitude")],pch=20,cex=0.5)
+
+
+thunb_plot<- Thunbergia
+thunb_plot<- raster::extract(bioclim,thunb_plot[,c("longitude","latitude")], df=TRUE)
+thunb_plot <- thunb_plot[,-1]
+
+mhd <- stats::mahalanobis(thunb_plot[,bestvarcomb],center = best_mod$centroid,cov = best_mod$covariance)
+
+distance<-data.frame(mhd)
+
+mahanalobis<-cbind(Thunbergia,distance)
+
+plot(Density.per.plot~mhd,data=mahanalobis)
+mod<-lm(Density.per.plot~mhd,data=mahanalobis)
+summary(mod)
+# write.infile(mahanalobis, "/Users/jmoutouama/Dropbox/PhD Project/Biotic_abiotic_Thunbergia/Data/distance.center.csv", sep = ";")
+
+
+```
+
+# PiecewiseSEM 
+```{r,results="hide"}
+##  Load data 
+Thunbergia.sem<-read.csv("/Users/jmoutouama/Dropbox/PhD Project/Biotic_abiotic_Thunbergia/Data/Thunbergia.csv", header=T)
+str(Thunbergia.sem)
+names(Thunbergia.sem)
+dim(Thunbergia.sem)
+Thunbergia.sem$Plot<-factor(Thunbergia.sem$Plot)
+for(i in c("LMA","skewness")) Thunbergia.sem[,i] <- as.numeric(Thunbergia.sem[,i])
+str(Thunbergia.sem)
+summary(Thunbergia.sem)
+zThunbergia.sem <- scale(Thunbergia.sem[,4:14])
+density<-log(Thunbergia.sem$Density)
+zThunbergia.sem<-data.frame(Thunbergia.sem[,c(1,2,15,16)],zThunbergia.sem,density)
+summary(zThunbergia.sem)
+names(zThunbergia.sem)[which(names(zThunbergia.sem) == "mhd.1")] <- "mhd"
+```
+
+
+## Model including distance from geographic center and altitude 
+```{r}
+library(lme4)
+library(piecewiseSEM)
+library(nlme)
+corsem_final <- piecewiseSEM::psem(
+  lme(PCA1 ~ Distance.center+Altitude,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(PCA2 ~ Distance.center+Altitude,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(LMA ~ PCA1+ Distance.center+ PCA2 + SRU +PAR +Altitude+Soil.moisture, random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(Chlorophyle ~ PCA1+ Distance.center+ PCA2 + SRU +PAR +Altitude+Soil.moisture, random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(PAR ~ Distance.center+Altitude,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(Soil.moisture ~ Distance.center+Altitude+SRU,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(SRU ~ PAR+Distance.center+Altitude+PCA1+PCA2+Chlorophyle+LMA+Soil.moisture,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(basal.diameter ~ PAR+Distance.center+Altitude+PCA1+ PCA2+SRU+Chlorophyle+LMA+density+Soil.moisture,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(density ~ PAR+Distance.center+Altitude+PCA1+ PCA2+SRU+Chlorophyle+LMA+basal.diameter+Soil.moisture+skewness,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(skewness ~ PAR+Distance.center+Altitude+PCA1+ PCA2+SRU+Chlorophyle+LMA+basal.diameter+Soil.moisture,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  Distance.center %~~% Altitude,
+  Soil.moisture %~~%  PCA1,
+  Soil.moisture %~~%  PCA2
+)
+
+```
+
+```{r}
+d<-summary(corsem_final, .progressBar = F)
+d$coefficients
+```
+
+## Model including distance from  climatic niche center and altitude 
+
+```{r}
+corsem_final_ellipsoid <- psem(
+  lme(PCA1 ~ mhd+Altitude,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(PCA2 ~ mhd+Altitude,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(LMA ~ PCA1+ mhd+ PCA2 + SRU +PAR +Altitude+Soil.moisture, random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(Chlorophyle ~ PCA1+ mhd+ PCA2 + SRU +PAR +Altitude+Soil.moisture, random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(PAR ~ mhd+Altitude,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(Soil.moisture ~ mhd+Altitude,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(SRU ~ PAR+mhd+Altitude+PCA1+PCA2+Chlorophyle+LMA+Soil.moisture,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(basal.diameter ~ PAR+mhd+Altitude+PCA1+ PCA2+SRU+Chlorophyle+LMA+density+Soil.moisture,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(density ~ PAR+mhd+Altitude+PCA1+ PCA2+SRU+Chlorophyle+LMA+basal.diameter+Soil.moisture,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  lme(skewness ~ PAR+mhd+Altitude+PCA1+ PCA2+SRU+Chlorophyle+LMA+basal.diameter+Soil.moisture,random = ~1|Population, na.action = na.omit, data = zThunbergia.sem),
+  Distance.center %~~% Altitude,
+  Soil.moisture %~~% PCA1,
+  Soil.moisture  %~~%  PAR
+)
+
+```
+
+```{r}
+b<-summary(corsem_final_ellipsoid, .progressBar = F)
+b$coefficients
+```
+
